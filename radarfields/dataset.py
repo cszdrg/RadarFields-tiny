@@ -9,9 +9,9 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 
-# from radarfields.sampler import get_azimuths, get_range_samples
+from radarfields.sampler import get_azimuths, get_range_samples
 from utils.data import read_fft_image, read_LUT
-# from utils.train import range_to_world
+from utils.pose import range_to_world
 
 @dataclass
 class RadarDataset:
@@ -25,7 +25,7 @@ class RadarDataset:
     preprocess_dir: str = "preprocess_results"
 
     # 采样规格设置
-    #雷达的采样波束个数
+    #雷达一圈的采样个数
     num_rays_radar: int = 200
     #角度上的采样个数
     num_fov_samples: int = 10
@@ -88,7 +88,7 @@ class RadarDataset:
             pose_radar = np.array(f, dtype=np.float32) # [4, 4]
             self.poses_radar.append(pose_radar)
 
-        # json数据4:FFT数据
+        # json数据4:FFT数据 横轴为角度 纵轴为距离 （方图）
         fft_path = self.project_root / self.data_path / self.radar_dir
         fft_frames = preprocess["timestamps_radar"]
         self.timestamps = fft_frames
@@ -100,7 +100,7 @@ class RadarDataset:
             self.fft_frames.append(raw_radar_fft)
 
         # 占用信息
-        #../../preprocess_results/occupancy_component//帧名
+        #../../preprocess_results/occupancy_component/帧名
         if self.reg_occ:
             self.occ_frames = []
             occ_path = self.project_root / 'preprocess_results' / 'occupancy_component' / str(self.preprocess_file).split('.')[0]
@@ -141,19 +141,20 @@ class RadarDataset:
         ## Custom collate_fn to collate a batch of raw FFT data.
         ### Also samples range-azimuth bins for each FFT frame in the batch.
         '''
-        B = len(index) # index is a list of length [B]
-        N = self.num_rays_radar
-        S = self.num_fov_samples
-        R = self.num_range_samples
+        B = len(index) # index is a list of length [B] 多少张FFT图片
+        N = self.num_rays_radar    #360度一圈 采样多少个射线
+        S = self.num_fov_samples   #每个射线 在角度上采样多少
+        R = self.num_range_samples #在距离上 包含多少范围
 
         results = {}
 
-        # Radar2world matrices
+        # 雷达位姿：radar -> world
         poses_radar = self.poses_radar[index].to(self.device)  # [B, 4, 4]
 
         # Sample azimuth angles at which to query model (in terms of idx from 0 -> 400)
         # (sample all azimuths during test)
         azimuth_samples = get_azimuths(B, N, self.num_azimuths_radar, self.device, all=not self.training)
+        #(B,N)
 
         # Sample range bins at which to query model, and convert to radial distances in meters
         range_samples_idx = get_range_samples(B, self.num_rays_radar,
@@ -161,12 +162,15 @@ class RadarDataset:
                                           self.range_bounds,
                                           device=self.device,
                                           all=self.sample_all_ranges) # [B, N, R]
+        # B个位姿 N个射线 R个距离
         range_samples = range_to_world(range_samples_idx, self.bin_size_radar) # [B, N, R]
+        # 每条射线都细分为s条
         range_samples_expanded = range_samples.repeat_interleave(S, dim=1) # [B, N*S, R]
 
         # Crop radar FFT frames & occupancy components to provided bin ranges
         # NOTE: bins are 1-indexed, tensors are 0-indexed
         fft = self.fft_frames[index].to(self.device)
+        
         fft = fft[:,:,self.min_range_bin-1:self.max_range_bin] # [B, H, W]
         if self.reg_occ:
             occ = self.occ_frames[index].to(self.device)
@@ -194,15 +198,15 @@ class RadarDataset:
 
         if not self.training: return results # We test on all FFT bins
 
-        # If training, filter data for only sampled azimuth beams
+        # 如果是训练 在fft图像中，只取出训练的射线
         num_bins = self.max_range_bin-self.min_range_bin+1
         results["fft"] = torch.gather(fft, 1, azimuth_samples[...,None].expand((B,N,num_bins)))
         if self.reg_occ: results["occ"] = torch.gather(occ, 1, azimuth_samples[...,None].expand((B,N,num_bins)))
 
-        # If sampling all range bins per-ray, no need to filter the data anymore; return
+        #如果采样所有的距离 直接返回
         if self.sample_all_ranges: return results
 
-        # Else use only the sampled range bins
+        # 否则只返回采样距离的射线
         results["fft"] = torch.gather(results["fft"], 2, range_samples_idx-self.min_range_bin)
         if self.reg_occ: results["occ"] = torch.gather(results["occ"], 2, range_samples_idx-self.min_range_bin)
         return results
