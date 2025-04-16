@@ -9,9 +9,9 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 
-from radarfields.sampler import get_azimuths, get_range_samples
+# from radarfields.sampler import get_azimuths, get_range_samples
 from utils.data import read_fft_image, read_LUT
-from utils.train import range_to_world
+# from utils.train import range_to_world
 
 @dataclass
 class RadarDataset:
@@ -74,35 +74,33 @@ class RadarDataset:
         self.preprocess = preprocess
 
         # Sampler
+        #josn的数据1:train_indeces/test_indeces 索引（一个FFT/位姿）
         self.indices = preprocess[self.split + '_indices']
-        self.sampler = SubsetRandomSampler(self.indices)
+        self.sampler = SubsetRandomSampler(self.indices) #进行随机采样
 
-        # Offsets and Scalers to normalize XYZ model queries
+        # json数据2:偏移和缩放
         self.offsets = torch.tensor(preprocess["offsets"], device=self.device)
         self.scalers = torch.tensor(preprocess["scalers"], device=self.device)
 
-        # Sensor poses
+        # json数据3:位姿
         self.poses_radar = []
         for f in tqdm.tqdm(preprocess["radar2worlds"], desc=f"Loading radar poses"):
             pose_radar = np.array(f, dtype=np.float32) # [4, 4]
             self.poses_radar.append(pose_radar)
 
-        # FFT data
+        # json数据4:FFT数据
         fft_path = self.project_root / self.data_path / self.radar_dir
         fft_frames = preprocess["timestamps_radar"]
         self.timestamps = fft_frames
         self.fft_frames = []
-        if self.train_thresholded: # train on thresholded FFT data
-            thresh_path = self.project_root / 'preprocess_results' / 'thresholded_fft' / Path(self.data_path).name
-            for fft_frame in tqdm.tqdm(fft_frames, desc=f"Loading (thresholded) FFT data"):
-                thresholded_fft = torch.tensor(np.load(thresh_path / (str(fft_frame).split('.')[0] + '.npy')))
-                self.fft_frames.append(thresholded_fft)
-        else: # Train on unprocessed FFT data
-            for fft_frame in tqdm.tqdm(fft_frames, desc=f"Loading FFT data"):
-                raw_radar_fft = read_fft_image(fft_path / fft_frame)
-                self.fft_frames.append(raw_radar_fft)
+        #原有代码可以选择thresholded_fft数据进行训练
+        #FFT数据的路径：../../data_path/radar/帧名
+        for fft_frame in tqdm.tqdm(fft_frames, desc=f"Loading FFT data"):
+            raw_radar_fft = read_fft_image(fft_path / fft_frame)
+            self.fft_frames.append(raw_radar_fft)
 
-        # Occupancy components (for regularizing occupancy)
+        # 占用信息
+        #../../preprocess_results/occupancy_component//帧名
         if self.reg_occ:
             self.occ_frames = []
             occ_path = self.project_root / 'preprocess_results' / 'occupancy_component' / str(self.preprocess_file).split('.')[0]
@@ -111,6 +109,7 @@ class RadarDataset:
                 occupancy_component = torch.tensor(np.load(occ_path / timestamp), dtype=torch.float32)
                 self.occ_frames.append(occupancy_component)
         
+        # 如果不是训练 对水平所有射线进行采样 否则采样200个 ｜ 对所有距离方位上进行采样
         if not self.training: # Sample all azimuth-range bins during testing
             self.num_rays_radar = self.num_azimuths_radar
             self.num_range_samples = self.max_range_bin-self.min_range_bin+1
@@ -118,14 +117,15 @@ class RadarDataset:
         if (self.max_range_bin-self.min_range_bin+1) ==self.num_range_samples: self.sample_all_ranges = True
         
         # Radiation pattern look-up table (LUT) for integrating beam samples
-        elevation_LUT_path = (self.project_root / self.data_path).parent / "elevation.csv"
-        azimuth_LUT_path = (self.project_root / self.data_path).parent / "azimuth.csv"
+        # 读取雷达天线的方向图：
+        elevation_LUT_path = (self.project_root / self.data_path).parent / "elevation.csv" #俯角方向图
+        azimuth_LUT_path = (self.project_root / self.data_path).parent / "azimuth.csv"     #仰角方向图
         print(f"loading elevation radiation pattern from {elevation_LUT_path}")
         self.elevation_LUT_linear = read_LUT(elevation_LUT_path)
         print(f"loading azimuth radiation pattern from {azimuth_LUT_path}")
         self.azimuth_LUT_linear = read_LUT(azimuth_LUT_path)
 
-        # Converting to torch
+        # 位姿、FFT数据、占用信息 转换为torch.Tensor
         self.poses_radar = torch.from_numpy(np.stack(self.poses_radar, axis=0)) # [B, 4, 4]
         self.fft_frames = torch.from_numpy(np.stack(self.fft_frames, axis=0)).float() # [B, H, W]
         if self.reg_occ: self.occ_frames = torch.stack(self.occ_frames, dim=0) # [B, H, W]
