@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+import torch
+from torch import nn
+import numpy as np
+from scipy.interpolate import interp1d
+
+class PoseOptimizer(nn.Module):
+    def __init__(self, pose, mode, colinear, device, non_trainable_camera_indices=None):
+        super().__init__()
+        self.pose = pose
+        self.num_camers = pose.size(0)
+        self.mode = mode 
+        self.colinear = colinear
+        self.device = device
+        if non_trainable_camera_indices is not None:
+            self.non_trainable_camera_indeices = torch.tensor(non_trainable_camera_indices, device = device)
+        else:
+            self.non_trainable_camera_indeices = non_trainable_camera_indices
+        
+        # 初始化可学习参数
+        if self.mode == "off":
+            pass
+        else:
+            self.pose_adjustment = torch.nn.Parameter(torch.zeros((self.num_camers, 6),device = device)) # [N,6]
+    
+    def forward(
+        self,
+        indices,
+    ):
+        # 获得转移矩阵
