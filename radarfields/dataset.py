@@ -43,7 +43,7 @@ class RadarDataset:
     # 可选设置
     sample_all_ranges: bool = False
     train_thresholded: bool = True
-    reg_occ: bool = True
+    reg_occ: bool = False
     additive: bool = False
     preload: bool = False
     square_gain: bool = True
