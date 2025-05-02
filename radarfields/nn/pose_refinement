@@ -4,7 +4,39 @@ import torch
 from torch import nn
 import numpy as np
 from scipy.interpolate import interp1d
-
+# 三维特殊正交群
+def exp_map_SO3xR3(tangent_vector):
+    return None
+# 特殊欧式群
+def exp_map_SE3(tangent_vector):
+    
+    # 分解为 线性速度和角速度
+    tangent_vector_lin = tangent_vector[:, :3].view(-1, 3, 1)
+    tangent_vector_ang = tangent_vector[:, 3:].view(-1, 3, 1)
+    
+    # 计算旋转的范数来评判旋转速度的大小
+    theta = torch.linalg.norm(tangent_vector_ang, dim=1).unsqueeze(1)
+    theta2 = theta**2
+    theta3 = theta**3
+    
+    # 把太小的直接变成1
+    near_zero = theta < 1e2
+    non_zero = torch.ones(1, dtype=tangent_vector.dtype, device = tangent_vector.device)
+    theta_nz = torch.where(near_zero, non_zero, theta)
+    theta2_nz = torch.where(near_zero, non_zero, theta2)
+    theta3_nz = torch.where(near_zero, non_zero, theta3)
+    
+    # 计算旋转矩阵 罗德里格斯公式
+    sine = theta.sin()
+    cosine = torch.where(near_zero, 8 / (4 + theta2) - 1, theta.cos())
+    sine_by_theta = torch.where(near_zero, 0.5 * cosine + 0.5, sine / theta_nz)
+    one_min_cosine_by_theta2 = torch.where(near_zero, 0.5 * sine_by_theta, (1 - cosine) / theta2_nz)
+    ret = torch.zeros(tangent_vector.shape[0], 3, 4).to(dtype = tangent_vector.dtype, device = tangent_vector.device)
+    ret[:, :3, :3] = one_min_cosine_by_theta2 * tangent_vector_ang @ tangent_vector_ang.transpose(1, 2)
+    
+    #计算
+    
+    
 class PoseOptimizer(nn.Module):
     def __init__(self, pose, mode, colinear, device, non_trainable_camera_indices=None):
         super().__init__()
@@ -29,3 +61,17 @@ class PoseOptimizer(nn.Module):
         indices,
     ):
         # 获得转移矩阵
+        output = None
+        
+        if self.mode == "off":
+            pass
+
+        pose_adjustment = self.pose_adjustment.clone()
+        
+        # 通过
+        if self.non_trainable_camera_indices is not None:
+            pose_adjustment[self.non_trainable_camera_indices] = torch.zeros((1,6), device = self.pose_adjustment.device)
+            
+        # Detach non-trainable indices by zero-ing out adjustments
+        if self.non_trainable_camera_indices is not None:
+            pose_adjustment[self.non_trainable_camera_indices] = torch.zeros((1,6), device=self.pose_adjustment.device)
